@@ -180,7 +180,14 @@ EOF
 
     # --- Libraries and build tools ------------------------------------------
     group_start "Ports: ${MACPORTS_PORTS[*]}"
-    "$TC/bin/port" -N install "${MACPORTS_PORTS[@]}"
+    if ! "$TC/bin/port" -N install "${MACPORTS_PORTS[@]}"; then
+        # The failed port's log is the newest; print its tail, since vm.sh
+        # deletes the VM (and the log with it) on failure.
+        failed_log="$(ls -t "$TC"/var/macports/logs/*/*/main.log | head -1)"
+        log "last 120 lines of $failed_log (debug lines dropped):"
+        grep -v '^:debug:' "$failed_log" | tail -n 120 | cut -c1-600 >&2 || true
+        die "MacPorts failed to install the ports above"
+    fi
     # Every port, dependencies included, must have used Xcode and its SDK.
     # (Prints the lines themselves: on failure vm.sh deletes the VM, logs
     # and all, so the reason must be in the build's own output.)
