@@ -1,0 +1,36 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+#
+# wmb: the one entry point, used the same way locally and in CI.
+#
+#   ./wmb toolchain <id> [--archive]     assemble toolchain <id> at /opt/wmb/toolchains/<id>
+#   ./wmb build <flavour> <version>      compile, package, smoke, manifest, archive -> out/
+#   ./wmb vm <command...>                run any of the above in a fresh Tart VM
+#                                        from the toolchain's pinned image
+#
+# `build` runs on this Mac, using whatever macOS and Xcode it has; the
+# manifest records them. `vm` is how releases are made: the pinned image
+# gives the same macOS and Xcode every time.
+
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+    toolchain)
+        exec "$ROOT/build/toolchain.sh" "$@" ;;
+    build)
+        [[ $# -eq 2 ]] || { echo "usage: wmb build <flavour> <version>" >&2; exit 2; }
+        "$ROOT/build/compile.sh" "$@"
+        "$ROOT/build/package.sh" "$@"
+        "$ROOT/build/smoke.sh" "$@"
+        "$ROOT/build/manifest.sh" "$@"
+        "$ROOT/build/archive.sh" "$@" ;;
+    compile|package|smoke|manifest|archive)
+        exec "$ROOT/build/$cmd.sh" "$@" ;;
+    vm)
+        exec "$ROOT/build/vm.sh" "$@" ;;
+    *)
+        sed -n '4,13p' "$0" | sed 's/^# \{0,1\}//' >&2
+        exit 2 ;;
+esac

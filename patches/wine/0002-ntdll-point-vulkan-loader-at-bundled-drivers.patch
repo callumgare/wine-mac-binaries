@@ -1,0 +1,50 @@
+From: written for wine-mac-binaries, reproducing behaviour of Gcenx's 11.21 binaries
+Source: none published. Gcenx's 11.21 ntdll.so does this (read from its
+ disassembly: init_paths checks VK_DRIVER_FILES, VK_ICD_FILENAMES and
+ VK_ADD_DRIVER_FILES, then sets VK_DRIVER_FILES to <lib/wine>/../../share/vulkan/icd.d
+ if that's a directory), but it isn't in his macports-wine overlay (any commit),
+ WineHQ 11.21 or master, or wine-staging, as of 2026-11-12.
+Upstream: no
+Why: the Vulkan loader only searches its build prefix, /usr/local, /etc and
+ ~/.config for driver manifests, so without this a relocatable build finds no
+ Vulkan driver (MoltenVK) at all: "vkCreateInstance: Found no drivers!".
+ Setting VK_DRIVER_FILES (not VK_ADD_) means only the shipped MoltenVK is
+ used, as in Gcenx's builds. Users can still override with any of the three
+ variables.
+Applies to: wine 11.x (plain, staging)
+
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -378,7 +378,22 @@
+         if (home_dir[0] != '/') fatal_error( "the home directory %s is not an absolute path\n", home_dir );
+         config_dir = build_path( home_dir, ".wine" );
+     }
++}
++
++#ifdef __APPLE__
++/* Point the Vulkan loader at the driver manifests installed with Wine
++ * (share/vulkan/icd.d: MoltenVK), unless the user has chosen drivers. */
++static void set_vulkan_driver_path(void)
++{
++    struct stat st;
++    char *path;
++
++    if (getenv( "VK_DRIVER_FILES" ) || getenv( "VK_ICD_FILENAMES" ) || getenv( "VK_ADD_DRIVER_FILES" )) return;
++    path = build_relative_path( dll_dir, LIBDIR "/wine", DATADIR "/vulkan/icd.d" );
++    if (!stat( path, &st ) && S_ISDIR( st.st_mode )) setenv( "VK_DRIVER_FILES", path, 1 );
++    free( path );
+ }
++#endif
+ 
+ static void init_paths(void)
+ {
+@@ -398,6 +413,9 @@
+         bin_dir = build_relative_path( dll_dir, LIBDIR "/wine", BINDIR );
+         data_dir = build_relative_path( dll_dir, LIBDIR "/wine", DATADIR "/wine" );
+         wineloader = build_path( ntdll_dir, "wine" );
++#ifdef __APPLE__
++        set_vulkan_driver_path();
++#endif
+     }
+ 
+     set_dll_path();

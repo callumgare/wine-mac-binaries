@@ -1,0 +1,327 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: LGPL-2.1-or-later
+"""compare: fingerprint two macOS Wine builds and report how they differ.
+
+    tools/compare [--pe] [--json OUT] A B
+
+A and B are build trees or tarballs (.tar.xz/.tar.gz). Gcenx's
+"Wine Devel.app/Contents/Resources/wine" and Sikarugir's "wswine.bundle"
+layouts are found automatically, as is ours.
+
+Sections (plan.md section 3):
+  files      what's in bin/, lib/wine/, share/wine/ and the bundled lib/
+  macho      per Mach-O: architectures, minimum macOS, SDK, linked libraries,
+             run paths, size of __text
+  strings    per Mach-O: C string constants (__TEXT,__cstring) only one side
+             has, after ignoring each build's install prefix and source
+             directory. A patch that isn't published (an environment variable,
+             a path, a message) almost always shows up here.
+  dlopen     libraries Wine's Unix side loads by name, and whether each is bundled
+  bundled    bundled libraries and their versions
+  addons     Gecko and Mono versions in share/wine
+  pe         (--pe) exports of every Windows-side DLL/EXE
+
+Standard library plus Xcode's command line tools only.
+"""
+
+import argparse
+import json
+import os
+import pathlib
+import re
+import subprocess
+import sys
+import tarfile
+import tempfile
+
+
+def run(*cmd):
+    return subprocess.run(cmd, capture_output=True, text=True).stdout
+
+
+# --- Locating the Wine tree ------------------------------------------------------
+
+def open_build(path, tmp):
+    p = pathlib.Path(path)
+    if p.is_file():
+        dest = pathlib.Path(tempfile.mkdtemp(dir=tmp))
+        # Plain tar keeps symlinks and is quicker than Python's tarfile for xz.
+        subprocess.run(["tar", "-xf", str(p), "-C", str(dest)], check=True)
+        p = dest
+    for cand in [p, *sorted(p.rglob("bin/wineserver"))]:
+        root = cand if cand.is_dir() else cand.parent.parent
+        if (root / "bin/wineserver").exists() and (root / "lib/wine").is_dir():
+            return root
+    sys.exit(f"compare: no Wine tree (bin/wineserver + lib/wine) found in {path}")
+
+
+def is_macho(f):
+    try:
+        with open(f, "rb") as fh:
+            magic = fh.read(4)
+    except OSError:
+        return False
+    return magic in (b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe", b"\xce\xfa\xed\xfe")
+
+
+# --- Sections --------------------------------------------------------------------
+
+AREAS = {
+    "bin": lambda r: r / "bin",
+    "lib/wine": lambda r: r / "lib/wine",
+    "share/wine": lambda r: r / "share/wine",
+    "share (other)": lambda r: r / "share",
+}
+SKIP_IN_OTHER = ("wine/",)
+
+
+def files(root):
+    out = {}
+    for area, get in AREAS.items():
+        base = get(root)
+        out[area] = sorted(str(f.relative_to(base)) for f in base.rglob("*")
+                           if (f.is_file() or f.is_symlink())
+                           and not (area == "share (other)" and str(f.relative_to(base)).startswith(SKIP_IN_OTHER))
+                           ) if base.exists() else []
+    lib = root / "lib"
+    out["lib (bundled)"] = sorted(f.name for f in lib.iterdir()
+                                  if f.name not in ("wine",)) if lib.exists() else []
+    return out
+
+
+def macho_info(f):
+    info = {"archs": run("lipo", "-archs", str(f)).split()}
+    lc = run("otool", "-l", str(f))
+    info["minos"] = sorted(set(re.findall(r"minos (\S+)", lc) + re.findall(r"cmd LC_VERSION_MIN_MACOSX\n.*\n\s+version (\S+)", lc)))
+    info["sdk"] = sorted(set(re.findall(r"\bsdk (\S+)", lc)))
+    info["rpaths"] = re.findall(r"cmd LC_RPATH\n.*\n\s+path (\S+)", lc)
+    libs = run("otool", "-L", str(f)).splitlines()[1:]
+    info["links"] = sorted(set(l.strip().split(" (")[0] for l in libs if l.strip() and not l.endswith(":")))
+    m = re.search(r"sectname __text\n\s+segname __TEXT\n\s+addr \S+\n\s+size (0x[0-9a-f]+)", lc)
+    info["text_size"] = int(m.group(1), 16) if m else None
+    info["strings"] = cstrings(f)
+    return info
+
+
+def cstrings(f):
+    out = run("otool", "-arch", "x86_64", "-X", "-v", "-s", "__TEXT", "__cstring", str(f))
+    return sorted({re.sub(r"^[0-9a-f]+\s+", "", l) for l in out.splitlines() if l.strip()})
+
+
+# Assertion messages carry the path the source was built in
+# (/private/tmp/wine-11.21/dlls/x/y.c): keep only the part inside Wine's tree.
+SOURCE_PATH = re.compile(r"^.*?/?((?:dlls|server|loader|programs|libs|include|tools)/\S+\.[ch])$")
+
+
+def install_prefix(macho):
+    """The --prefix Wine was configured with, as compiled into bin/wine
+    (BINDIR and LIBDIR, used to find the rest of the tree relative to itself)."""
+    s = set(macho.get("bin/wine", {}).get("strings", []))
+    for x in sorted(s, key=len, reverse=True):
+        if x.endswith("/bin") and x[:-4] + "/lib" in s:
+            return x[:-4]
+    return None
+
+
+def normalise_strings(macho):
+    prefix = install_prefix(macho)
+    for info in macho.values():
+        norm = set()
+        for x in info["strings"]:
+            if prefix and prefix in x:
+                x = x.replace(prefix, "<prefix>")
+            elif prefix == "" and re.match(r"^/(bin|lib|share|lib/wine)$|^/(share|lib/wine)/", x):
+                x = "<prefix>" + x      # an empty prefix, as in Gcenx's builds
+            x = SOURCE_PATH.sub(r"\1", x)
+            norm.add(x)
+        info["strings"] = sorted(norm)
+    return prefix
+
+
+def machos(root):
+    out = {}
+    for area in ("bin", "lib/wine/x86_64-unix"):
+        for f in sorted((root / area).glob("*")):
+            if f.is_file() and not f.is_symlink() and is_macho(f):
+                out[f"{area}/{f.name}"] = macho_info(f)
+    return out
+
+
+def dlopened(root):
+    names = set()
+    for f in (root / "lib/wine/x86_64-unix").glob("*.so"):
+        data = f.read_bytes()
+        names.update(m.decode() for m in re.findall(rb"(lib[A-Za-z0-9_.+-]+?\.dylib)\x00", data))
+    lib = root / "lib"
+    return {n: (lib / n).exists() for n in sorted(names)}
+
+
+def bundled(root):
+    out = {}
+    lib = root / "lib"
+    for f in sorted(lib.glob("*.dylib")):
+        if f.is_symlink():
+            continue
+        head = run("otool", "-L", str(f)).splitlines()
+        cur = re.search(r"current version ([0-9.]+)", head[1]) if len(head) > 1 else None
+        out[f.name] = {"current_version": cur.group(1) if cur else None,
+                       "minos": macho_info(f)["minos"]}
+    fw = lib / "GStreamer.framework"
+    if fw.exists():
+        out["GStreamer.framework"] = {"versions": sorted(p.name for p in (fw / "Versions").iterdir())}
+    return out
+
+
+def addons(root):
+    s = root / "share/wine"
+    return {k: sorted(p.name for p in (s / k).iterdir()) if (s / k).exists() else []
+            for k in ("gecko", "mono")}
+
+
+def pe_exports(root):
+    out = {}
+    for arch in ("i386-windows", "x86_64-windows"):
+        for f in sorted((root / "lib/wine" / arch).glob("*")):
+            if f.suffix.lower() not in (".dll", ".exe", ".drv", ".sys", ".ocx", ".acm", ".cpl", ".ax", ".ds", ".msstyles", ".tlb"):
+                continue
+            text = run("xcrun", "llvm-objdump", "-p", str(f))
+            sec = text.split("Export Table:", 1)
+            names = set()
+            if len(sec) == 2:
+                for line in sec[1].splitlines()[3:]:
+                    if not line.strip():
+                        break
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        names.add(" ".join(parts[2:] if parts[1].startswith("0x") else parts[1:]))
+            out[f"{arch}/{f.name}"] = sorted(names)
+    return out
+
+
+# --- Report ----------------------------------------------------------------------
+
+def diff_lists(a, b):
+    sa, sb = set(a), set(b)
+    return sorted(sa - sb), sorted(sb - sa)
+
+
+def report(A, B, data, show_pe):
+    a, b = data["A"], data["B"]
+    lines = [f"# Comparing builds\n", f"- A: `{A}`", f"- B: `{B}`\n"]
+    differences = 0
+
+    lines.append("## Files\n")
+    for area in a["files"]:
+        only_a, only_b = diff_lists(a["files"][area], b["files"][area])
+        lines.append(f"**{area}**: A {len(a['files'][area])}, B {len(b['files'][area])}, "
+                     f"only in A {len(only_a)}, only in B {len(only_b)}")
+        for name, lst in (("only in A", only_a), ("only in B", only_b)):
+            if lst:
+                differences += len(lst)
+                shown = ", ".join(f"`{x}`" for x in lst[:40])
+                more = f" … and {len(lst) - 40} more" if len(lst) > 40 else ""
+                lines.append(f"- {name}: {shown}{more}")
+        lines.append("")
+
+    lines.append("## Mach-O files (Wine's own)\n")
+    common = sorted(set(a["macho"]) & set(b["macho"]))
+    for key in ("archs", "minos", "sdk", "rpaths", "links"):
+        vals_a = {tuple(a["macho"][f][key]) for f in common}
+        vals_b = {tuple(b["macho"][f][key]) for f in common}
+        if key in ("archs", "minos", "sdk"):
+            lines.append(f"- {key}: A {sorted(vals_a)}, B {sorted(vals_b)}")
+    for f in common:
+        ma, mb = a["macho"][f], b["macho"][f]
+        for key in ("archs", "minos", "rpaths", "links"):
+            if ma[key] != mb[key]:
+                differences += 1
+                lines.append(f"- `{f}` {key}: A {ma[key]} / B {mb[key]}")
+        ta, tb = ma["text_size"], mb["text_size"]
+        if ta and tb and abs(ta - tb) / max(ta, tb) > 0.02:
+            differences += 1
+            lines.append(f"- `{f}` __text size differs by more than 2%: A {ta}, B {tb}")
+    lines.append("")
+
+    lines.append("## Strings in Wine's Mach-O files\n")
+    lines.append(f"Install prefix: A `{a['prefix']!r}`, B `{b['prefix']!r}` (shown as `<prefix>`).\n")
+    n_diff = 0
+    for f in common:
+        only_a, only_b = diff_lists(a["macho"][f]["strings"], b["macho"][f]["strings"])
+        if only_a or only_b:
+            n_diff += 1
+            differences += 1
+            lines.append(f"- `{f}`:")
+            for name, lst in (("only in A", only_a), ("only in B", only_b)):
+                if lst:
+                    shown = ", ".join(f"`{x[:120]}`" for x in lst[:15])
+                    more = f" … and {len(lst) - 15} more" if len(lst) > 15 else ""
+                    lines.append(f"  - {name}: {shown}{more}")
+    lines.append(f"\n{len(common)} files compared, {n_diff} with different strings.\n")
+
+    lines.append("## Libraries loaded by name\n")
+    lines.append("| library | A has it bundled | B has it bundled |\n|---|---|---|")
+    for n in sorted(set(a["dlopen"]) | set(b["dlopen"])):
+        va, vb = a["dlopen"].get(n), b["dlopen"].get(n)
+        mark = "" if va == vb else " ⚠"
+        if va != vb:
+            differences += 1
+        lines.append(f"| `{n}`{mark} | {va} | {vb} |")
+    lines.append("")
+
+    lines.append("## Bundled libraries\n")
+    lines.append("| library | A | B |\n|---|---|---|")
+    for n in sorted(set(a["bundled"]) | set(b["bundled"])):
+        fa, fb = a["bundled"].get(n), b["bundled"].get(n)
+        fmt = lambda v: "—" if v is None else ", ".join(f"{k} {v[k]}" for k in v)
+        lines.append(f"| `{n}` | {fmt(fa)} | {fmt(fb)} |")
+    lines.append("")
+
+    lines.append("## Add-ons\n")
+    for k in ("gecko", "mono"):
+        mark = "" if a["addons"][k] == b["addons"][k] else " ⚠"
+        lines.append(f"- {k}{mark}: A {a['addons'][k]}, B {b['addons'][k]}")
+    lines.append("")
+
+    if show_pe:
+        lines.append("## Windows-side exports\n")
+        pa, pb = a["pe"], b["pe"]
+        n_diff = 0
+        for f in sorted(set(pa) & set(pb)):
+            only_a, only_b = diff_lists(pa[f], pb[f])
+            if only_a or only_b:
+                n_diff += 1
+                differences += 1
+                lines.append(f"- `{f}`: only in A {only_a[:10]}, only in B {only_b[:10]}")
+        lines.append(f"\n{len(set(pa) & set(pb))} modules compared, {n_diff} with different exports.\n")
+
+    lines.append(f"**{differences} differences.**")
+    return "\n".join(lines) + "\n", differences
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("A")
+    ap.add_argument("B")
+    ap.add_argument("--pe", action="store_true", help="also compare Windows-side exports (slower)")
+    ap.add_argument("--json", help="write the raw fingerprints here")
+    args = ap.parse_args()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        data = {}
+        for label, path in (("A", args.A), ("B", args.B)):
+            root = open_build(path, tmp)
+            d = {"root": str(root), "files": files(root), "macho": machos(root),
+                 "dlopen": dlopened(root), "bundled": bundled(root), "addons": addons(root)}
+            d["prefix"] = normalise_strings(d["macho"])
+            if args.pe:
+                d["pe"] = pe_exports(root)
+            data[label] = d
+        text, n = report(args.A, args.B, data, args.pe)
+        if args.json:
+            pathlib.Path(args.json).write_text(json.dumps(data, indent=1))
+    sys.stdout.write(text)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

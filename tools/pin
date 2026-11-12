@@ -1,0 +1,96 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+#
+# tools/pin <flavour> <version> [--toolchain <id>] [--revision <n>]
+#
+# Writes inputs/<flavour>/<version>.sh: the exact files a build of that
+# version uses, each pinned by sha256.
+#
+# - Downloads WineHQ's tarball and its .sign, and checks the signature
+#   against the keys in keys/. Builds then only need shasum, not GnuPG.
+# - Reads the Gecko and Mono versions from dlls/appwiz.cpl/addons.c and
+#   pins their tarballs.
+# - Copies the patch list from the newest existing inputs file of the same
+#   major version; review it before building.
+#
+# Needs gpg, curl and shasum. Supports the plain "wine" flavour for now.
+
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+die() { echo "pin: $*" >&2; exit 1; }
+
+[[ $# -ge 2 ]] || die "usage: tools/pin <flavour> <version> [--toolchain <id>] [--revision <n>]"
+FLAVOUR="$1"; VERSION="$2"; shift 2
+TOOLCHAIN="$(ls "$ROOT/toolchains" | sed -n 's/\.sh$//p' | sort | tail -1)"
+REVISION=1
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --toolchain) TOOLCHAIN="$2"; shift 2 ;;
+        --revision) REVISION="$2"; shift 2 ;;
+        *) die "unknown option $1" ;;
+    esac
+done
+[[ "$FLAVOUR" == wine ]] || die "only the wine flavour is supported so far"
+
+OUT="$ROOT/inputs/$FLAVOUR/$VERSION.sh"
+[[ -e "$OUT" ]] && die "$OUT exists; a pinned version is changed by hand, with a new --revision"
+
+TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+MAJOR="${VERSION%%.*}"
+URL="https://dl.winehq.org/wine/source/$MAJOR.x/wine-$VERSION.tar.xz"
+curl -fsSL -o "$TMP/src.tar.xz" "$URL"
+curl -fsSL -o "$TMP/src.tar.xz.sign" "$URL.sign"
+
+export GNUPGHOME="$TMP/gnupg"; mkdir -m 700 "$GNUPGHOME"
+gpg --quiet --import "$ROOT"/keys/*.asc 2>/dev/null
+STATUS="$(gpg --status-fd 1 --verify "$TMP/src.tar.xz.sign" "$TMP/src.tar.xz" 2>/dev/null || true)"
+KEY="$(sed -n 's/^\[GNUPG:\] VALIDSIG \([0-9A-F]*\) .*/\1/p' <<<"$STATUS" | head -1)"
+SIGTIME="$(sed -n 's/^\[GNUPG:\] VALIDSIG [0-9A-F]* [0-9-]* \([0-9]*\) .*/\1/p' <<<"$STATUS" | head -1)"
+[[ -n "$KEY" ]] || die "signature check failed for $URL"
+SHA="$(shasum -a 256 "$TMP/src.tar.xz" | cut -d' ' -f1)"
+
+tar -xJf "$TMP/src.tar.xz" -C "$TMP" "wine-$VERSION/dlls/appwiz.cpl/addons.c"
+ADDONS="$TMP/wine-$VERSION/dlls/appwiz.cpl/addons.c"
+GECKO="$(sed -n 's/^#define GECKO_VERSION "\(.*\)"/\1/p' "$ADDONS")"
+MONO="$(sed -n 's/^#define MONO_VERSION "\(.*\)"/\1/p' "$ADDONS")"
+
+hash_url() { curl -fsSL "$1" | shasum -a 256 | cut -d' ' -f1; }
+G86="https://dl.winehq.org/wine/wine-gecko/$GECKO/wine-gecko-$GECKO-x86.tar.xz"
+G64="https://dl.winehq.org/wine/wine-gecko/$GECKO/wine-gecko-$GECKO-x86_64.tar.xz"
+M86="https://dl.winehq.org/wine/wine-mono/$MONO/wine-mono-$MONO-x86.tar.xz"
+
+PREV="$(ls "$ROOT/inputs/$FLAVOUR/$MAJOR."*.sh 2>/dev/null | sort -V | tail -1 || true)"
+PATCHES="$( [[ -n "$PREV" ]] && sed -n '/^PATCHES=(/,/^)/p' "$PREV" || printf 'PATCHES=(\n)\n')"
+
+mkdir -p "$(dirname "$OUT")"
+cat > "$OUT" <<EOF
+# shellcheck shell=bash disable=SC2034
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Pinned inputs for $FLAVOUR $VERSION. Written by tools/pin; review changes like code.
+
+WINE_VERSION="$VERSION"
+BUILD_REVISION=$REVISION
+TOOLCHAIN="$TOOLCHAIN"
+
+WINE_URL="$URL"
+WINE_SHA256="$SHA"
+# The tarball's .sign verified with this key when pinned ($(date -u +%Y-%m-%d)):
+WINE_SIGNING_KEY="$KEY"
+# Release date, used as SOURCE_DATE_EPOCH (signature creation time).
+WINE_RELEASE_EPOCH=$SIGTIME
+
+# Add-ons: the versions dlls/appwiz.cpl/addons.c names, as the tarballs
+# Gcenx extracts into share/wine.
+GECKO_VERSION="$GECKO"
+GECKO_X86_URL="$G86"
+GECKO_X86_SHA256="$(hash_url "$G86")"
+GECKO_X86_64_URL="$G64"
+GECKO_X86_64_SHA256="$(hash_url "$G64")"
+MONO_VERSION="$MONO"
+MONO_URL="$M86"
+MONO_SHA256="$(hash_url "$M86")"
+
+# Applied in order, with patch -p1.${PREV:+ Copied from $(basename "$PREV"); check each still applies and is still needed.}
+$PATCHES
+EOF
+echo "Wrote $OUT"
