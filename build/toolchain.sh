@@ -38,14 +38,25 @@ load_toolchain "$ID"
 # pinned image ship a libxcrun without an x86_64 slice, so every x86_64
 # build tool MacPorts makes (cmake, ...) can't run clang at all. MacPorts
 # has no global setting for this (use_xcode=yes on the command line doesn't
-# reach dependencies), so after installing MacPorts we change one line of it:
-# configure_get_developer_dir always returns Xcode's directory. The port
-# build logs are checked afterwards.
+# reach dependencies), so after installing MacPorts we change two lines of it:
+#
+#   - configure_get_developer_dir always returns Xcode's directory;
+#   - configure_get_sdkroot skips its "Command Line Tools first" branch.
+#     Without this, SDKROOT is the CLT's SDK for the running macOS (26.x)
+#     even though the compiler is Xcode's. (macports.conf can't set the SDK
+#     path: macosx_sdk_path there is ignored, it's only for portindex.)
+#     With it, and macosx_sdk_version set to Xcode's SDK below, MacPorts
+#     finds exactly Xcode's SDK.
+#
+# The port build logs are checked afterwards.
 patch_macports_use_xcode() {
     local f="$TC/libexec/macports/lib/port1.0/portconfigure.tcl"
-    grep -q 'wine-mac-binaries: always use Xcode' "$f" && return
-    sed -i '' 's/^    if {\[tbool use_xcode\]} {$/    if {1 || [tbool use_xcode]} {  ;# wine-mac-binaries: always use Xcode/' "$f"
-    grep -q 'wine-mac-binaries: always use Xcode' "$f" || die "couldn't patch $f (MacPorts changed?)"
+    grep -q 'wine-mac-binaries: always use Xcode' "$f" ||
+        sed -i '' 's/^    if {\[tbool use_xcode\]} {$/    if {1 || [tbool use_xcode]} {  ;# wine-mac-binaries: always use Xcode/' "$f"
+    grep -q 'wine-mac-binaries: never the CLT SDK' "$f" ||
+        sed -i '' 's/^    if {!\[tbool use_xcode\]} {$/    if {0 \&\& ![tbool use_xcode]} {  ;# wine-mac-binaries: never the CLT SDK/' "$f"
+    grep -q 'wine-mac-binaries: always use Xcode' "$f" && grep -q 'wine-mac-binaries: never the CLT SDK' "$f" ||
+        die "couldn't patch $f (MacPorts changed?)"
 }
 export PATH; PATH="$(clean_path)"
 export MACOSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET"
@@ -157,9 +168,9 @@ buildfromsource             always
 macosx_deployment_target    $DEPLOYMENT_TARGET
 build_arch                  x86_64
 startupitem_install         no
-# The SDK Wine itself is compiled against (Xcode's). Left alone, MacPorts
-# picks the Command Line Tools' SDK for the running macOS (26.x).
-macosx_sdk_path             $(xcrun --sdk macosx --show-sdk-path)
+# The SDK Wine itself is compiled against (Xcode's); with the patch above,
+# MacPorts then uses Xcode's MacOSX<this>.sdk.
+macosx_sdk_version          $(xcrun --sdk macosx --show-sdk-version)
 # Keep every port's build log (checked below, and part of the record).
 keeplogs                    yes
 EOF
@@ -171,7 +182,10 @@ EOF
     group_start "Ports: ${MACPORTS_PORTS[*]}"
     "$TC/bin/port" -N install "${MACPORTS_PORTS[@]}"
     # Every port, dependencies included, must have used Xcode and its SDK.
-    if grep -l -E "(DEVELOPER_DIR|SDKROOT)='/Library/Developer/CommandLineTools" "$TC"/var/macports/logs/*/*/main.log 2>/dev/null; then
+    # (Prints the lines themselves: on failure vm.sh deletes the VM, logs
+    # and all, so the reason must be in the build's own output.)
+    if grep -H -m 2 -E "(DEVELOPER_DIR|SDKROOT)='/Library/Developer/CommandLineTools" "$TC"/var/macports/logs/*/*/main.log 2>/dev/null |
+        sed -E 's|^[^:]*/logs/[^/]*/([^/]*)/main.log:|\1: |' | cut -c1-400; then
         die "the ports above were built with the Command Line Tools or their SDK, not Xcode's"
     fi
     "$TC/bin/port" -q installed > "$SRC/ports-installed.txt"
