@@ -90,7 +90,14 @@ if [[ -s "$LOG/outside.txt" ]]; then
 fi
 
 step "MoltenVK loads from the build"
+# dyld writes each line in pieces, so with two processes loading MoltenVK
+# at once both of its lines can be torn (one build failed that way; in six
+# reruns, libvulkan's line went missing once). So it's enough for the path
+# to appear anywhere, or for MoltenVK to announce itself. Either way it's
+# the build's: the sandbox denies every other place one could come from.
 grep -q -x "$T/lib/libMoltenVK.dylib" "$LOG/loaded.txt" ||
+    grep -q -F "$T/lib/libMoltenVK.dylib" "$LOG"/*.log ||
+    grep -q -F '[mvk-info] MoltenVK version' "$LOG"/*.log ||
     fail "MoltenVK wasn't loaded from $T/lib, so Vulkan has no driver"
 
 log "Smoke test passed ($(wc -l < "$LOG/loaded.txt" | tr -d ' ') libraries loaded, $(grep -c "^$T/" "$LOG/loaded.txt") of them the build's own)"
