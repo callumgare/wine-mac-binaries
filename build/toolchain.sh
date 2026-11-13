@@ -38,18 +38,13 @@ load_toolchain "$ID"
 # pinned image ship a libxcrun without an x86_64 slice, so every x86_64
 # build tool MacPorts makes (cmake, ...) can't run clang at all. MacPorts
 # has no global setting for this (use_xcode=yes on the command line doesn't
-# reach dependencies), so after installing MacPorts we change three lines of it:
+# reach dependencies), so after installing MacPorts we change two lines of it:
 #
 #   - configure_get_developer_dir always returns Xcode's directory;
 #   - configure_get_sdkroot always returns $PORTS_SDK (below), the SDK
 #     pinned in the toolchain definition. MacPorts would otherwise pick the
 #     CLT's SDK for the running macOS (26.x), and macports.conf can't set
 #     the path: macosx_sdk_path there is ignored, it's only for portindex.
-#   - CPPFLAGS start with -arch x86_64. Xcode's clang targets arm64 even
-#     under Rosetta, and MacPorts passes -arch only in CFLAGS/CXXFLAGS, so
-#     configure's preprocessor checks (`$CC -E $CPPFLAGS`) ran for arm64.
-#     The 10.15 SDK has no arm64, so they failed and configure fell back to
-#     /lib/cpp; with a newer SDK they silently answered for the wrong arch.
 #
 # The port build logs are checked afterwards.
 patch_macports_use_xcode() {
@@ -60,16 +55,20 @@ patch_macports_use_xcode() {
         sed -i '' "/^proc portconfigure::configure_get_sdkroot {sdk_version} {\$/a\\
 \\    return {$PORTS_SDK}  ;# wine-mac-binaries: always our SDK
 " "$f"
-    grep -q 'wine-mac-binaries: preprocess for x86_64' "$f" ||
-        sed -i '' 's|^        return -I\${prefix}/include$|        return "-arch x86_64 -I${prefix}/include"  ;# wine-mac-binaries: preprocess for x86_64|' "$f"
     grep -q 'wine-mac-binaries: always use Xcode' "$f" &&
-        grep -qF "return {$PORTS_SDK}  ;# wine-mac-binaries: always our SDK" "$f" &&
-        grep -q 'wine-mac-binaries: preprocess for x86_64' "$f" ||
+        grep -qF "return {$PORTS_SDK}  ;# wine-mac-binaries: always our SDK" "$f" ||
         die "couldn't patch $f (MacPorts changed?)"
 }
 
 export PATH; PATH="$(clean_path)"
 export MACOSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET"
+# The preprocessor, for x86_64. Xcode's clang targets arm64 even under
+# Rosetta, and MacPorts passes -arch only in CFLAGS/CXXFLAGS (CPPFLAGS has
+# none, and some Portfiles replace it), so configure's checks with `$CC -E`
+# ran for arm64. The 10.15 SDK has no arm64, so they failed and configure
+# fell back to /lib/cpp; with a newer SDK they silently answered for the
+# wrong arch. macports.conf's extra_env (below) passes these through.
+export CPP="/usr/bin/clang -E -arch x86_64" CXXCPP="/usr/bin/clang++ -E -arch x86_64"
 JOBS="$(sysctl -n hw.ncpu)"
 
 if [[ ! -w "$WMB_TOOLCHAINS_DIR" ]]; then
@@ -203,6 +202,8 @@ startupitem_install         no
 # The version of \$PORTS_SDK, which the patch above makes MacPorts use.
 # (Portfiles test this version.)
 macosx_sdk_version          $PORTS_SDK_VERSION
+# CPP and CXXCPP, set above.
+extra_env                   CPP CXXCPP
 # Keep every port's build log (checked below, and part of the record).
 keeplogs                    yes
 EOF
@@ -213,11 +214,22 @@ EOF
     # --- Libraries and build tools ------------------------------------------
     group_start "Ports: ${MACPORTS_PORTS[*]}"
     if ! "$TC/bin/port" -N install "${MACPORTS_PORTS[@]}"; then
-        # The failed port's log is the newest; print its tail, since vm.sh
-        # deletes the VM (and the log with it) on failure.
-        failed_log="$(ls -t "$TC"/var/macports/logs/*/*/main.log | head -1)"
-        log "last 120 lines of $failed_log (debug lines dropped):"
-        grep -v '^:debug:' "$failed_log" | tail -n 120 | cut -c1-600 >&2 || true
+        # Print the failed port's log, since vm.sh deletes the VM (and the
+        # log with it) on failure. That's the log with a "Failed to <phase>"
+        # error; the ports depending on it only say "Processing ... failed".
+        grep -l -E '^:error:[a-z]+ Failed to ' "$TC"/var/macports/logs/*/*/main.log 2>/dev/null |
+        while read -r failed_log; do
+            log "last 120 lines of $failed_log (debug lines dropped):"
+            grep -v '^:debug:' "$failed_log" | tail -n 120 | cut -c1-600 >&2 || true
+            # A configure failure's reason is usually only in config.log.
+            if grep -q '^:error:configure ' "$failed_log"; then
+                cl="$(grep -o -E -m 1 'consult [^ ]*/config\.log' "$failed_log" | cut -d' ' -f2)"
+                if [[ -n "$cl" && -f "$cl" ]]; then
+                    log "errors in $cl:"
+                    grep -n -E 'error|Error' "$cl" | tail -n 40 | cut -c1-400 >&2 || true
+                fi
+            fi
+        done
         die "MacPorts failed to install the ports above"
     fi
     # Every port, dependencies included, must have used Xcode's compiler and
