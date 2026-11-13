@@ -140,11 +140,18 @@ else
     # Xcode's SDK, and the old SDK has none. Use Xcode's: they're the ones
     # Wine's C++-using dependencies get today, and they mark what each
     # macOS version's libc++ lacks, so the deployment target still guards
-    # them. (They warn that 10.15 is no longer supported by libc++.)
+    # them. They #warning that macOS < 11 is "no longer supported by
+    # libc++"; that line is dropped, because CMake's bootstrap treats any
+    # warning in its C++ feature checks as "unsupported" and gives up
+    # ("does not support C++11").
     xcode_sdk="$(xcrun --sdk macosx --show-sdk-path)"
     [[ -d "$xcode_sdk/usr/include/c++/v1" ]] || die "no libc++ headers in $xcode_sdk"
     mkdir -p "$PORTS_SDK/usr/include/c++"
     cp -R "$xcode_sdk/usr/include/c++/v1" "$PORTS_SDK/usr/include/c++/"
+    avail="$PORTS_SDK/usr/include/c++/v1/__configuration/availability.h"
+    grep -q '^#  warning "The selected platform is no longer supported by libc++."$' "$avail" ||
+        die "libc++'s unsupported-platform warning has changed; recheck $avail"
+    sed -i '' '/^#  warning "The selected platform is no longer supported by libc++."$/d' "$avail"
     touch "$PORTS_SDK/.complete"
     group_end
     fi
