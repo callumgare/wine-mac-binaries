@@ -62,13 +62,18 @@ patch_macports_use_xcode() {
 
 export PATH; PATH="$(clean_path)"
 export MACOSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET"
-# The preprocessor, for x86_64. Xcode's clang targets arm64 even under
-# Rosetta, and MacPorts passes -arch only in CFLAGS/CXXFLAGS (CPPFLAGS has
-# none, and some Portfiles replace it), so configure's checks with `$CC -E`
-# ran for arm64. The 10.15 SDK has no arm64, so they failed and configure
-# fell back to /lib/cpp; with a newer SDK they silently answered for the
-# wrong arch. macports.conf's extra_env (below) passes these through.
-export CPP="/usr/bin/clang -E -arch x86_64" CXXCPP="/usr/bin/clang++ -E -arch x86_64"
+# Every clang invocation targets x86_64. Xcode 27's clang is arm64-only, so
+# even under Rosetta it targets arm64 unless given -arch, and MacPorts puts
+# -arch only in CFLAGS/CXXFLAGS/LDFLAGS. Everything else ran for arm64:
+# configure's `$CC -E` checks (CPPFLAGS has no -arch, and Portfiles like
+# xz-bootstrap replace it) and helper programs built with a bare $CC
+# (libiconv's genaliases). With the 10.15 SDK, which has no arm64, those
+# fail; with a newer SDK they silently answered for, or built, the wrong
+# arch. Clang's driver appends `-arch x86_64` to each command line when
+# CCC_OVERRIDE_OPTIONS says so ("#" keeps it quiet); macports.conf's
+# extra_env (below) passes it through. Only for the toolchain: Wine's build
+# also runs llvm-mingw's clang.
+export CCC_OVERRIDE_OPTIONS="# +-arch +x86_64"
 JOBS="$(sysctl -n hw.ncpu)"
 
 if [[ ! -w "$WMB_TOOLCHAINS_DIR" ]]; then
@@ -202,8 +207,8 @@ startupitem_install         no
 # The version of \$PORTS_SDK, which the patch above makes MacPorts use.
 # (Portfiles test this version.)
 macosx_sdk_version          $PORTS_SDK_VERSION
-# CPP and CXXCPP, set above.
-extra_env                   CPP CXXCPP
+# CCC_OVERRIDE_OPTIONS, set above.
+extra_env                   CCC_OVERRIDE_OPTIONS
 # Keep every port's build log (checked below, and part of the record).
 keeplogs                    yes
 EOF
@@ -248,6 +253,21 @@ EOF
             "$TC"/var/macports/logs/*/*/main.log 2>/dev/null |
         sed -E 's|^[^:]*/logs/[^/]*/([^/]*)/main.log:|\1: |'; then
         die "configure fell back to /lib/cpp in the ports above (clang -E failed; see config.log)"
+    fi
+    # Everything the ports installed is x86_64 only. (Not MacPorts itself,
+    # whose darwintrace.dylib is universal by design, nor the prebuilt,
+    # universal llvm-mingw and MoltenVK, there if this is a resumed build.)
+    find "$TC/bin" "$TC/lib" "$TC/libexec" \
+            -path "$TC/libexec/llvm-mingw" -prune -o -name 'libMoltenVK*' -prune -o \
+            -path "$TC/libexec/macports" -prune -o \
+            -type f \( -perm -u+x -o -name '*.dylib' \) -print |
+    while read -r f; do
+        a="$(lipo -archs "$f" 2>/dev/null)" || continue
+        [[ "$a" == x86_64 ]] || echo "${f#"$TC/"}: $a"
+    done > "$SRC/not-x86_64.txt"
+    if [[ -s "$SRC/not-x86_64.txt" ]]; then
+        head -20 "$SRC/not-x86_64.txt"
+        die "some port files aren't x86_64 only (above)"
     fi
     "$TC/bin/port" -q installed > "$SRC/ports-installed.txt"
     group_end
