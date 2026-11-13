@@ -16,6 +16,19 @@ XCODE_VERSION="27.2"
 # Wine binaries do.
 DEPLOYMENT_TARGET="10.15"
 
+# The SDK every MacPorts port is built against: Apple's 10.15 SDK, matching
+# DEPLOYMENT_TARGET, so configure scripts can't find (and libraries can't
+# weak-link) functions newer than the minimum macOS. With Xcode 27.2's SDK,
+# gettext picked up macOS 27's pipe2 and its xgettext crashed on the macOS 26
+# build VM; with the 26.5 SDK, libidn2 weak-linked macOS 15.4's strchrnul.
+# Gcenx builds his libraries the same way (against 10.14); this is the
+# archive his MacOSX10.15.sdk port downloads, re-hosted by him. Only used
+# while building; never shipped, nor put in the toolchain archive.
+# (Wine itself is built with Xcode's SDK, as Gcenx's is; see compile.sh.)
+PORTS_SDK_VERSION="10.15"
+PORTS_SDK_URL="https://github.com/Gcenx/macos-sdk/releases/download/10.15/MacOSX10.15.tar.bz2"
+PORTS_SDK_SHA256="bb548125ebf5cf4ae6c80d226f40ad39e155564ca78bc00554a2e84074d0180e"
+
 # --- MacPorts: builds the shipped libraries from source ---------------------
 MACPORTS_VERSION="2.12.7"
 MACPORTS_URL="https://github.com/macports/macports-base/releases/download/v2.12.7/MacPorts-2.12.7.tar.bz2"

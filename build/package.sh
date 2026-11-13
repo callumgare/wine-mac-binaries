@@ -220,6 +220,23 @@ if [[ -s "$W/weak-imports.txt" ]]; then
     cat "$W/weak-imports.txt"
     die "Wine uses functions newer than macOS $DEPLOYMENT_TARGET (add them to NEWER_THAN_TARGET in compile.sh)"
 fi
+
+# The bundled MacPorts libraries are built against the $DEPLOYMENT_TARGET SDK
+# (PORTS_SDK in the toolchain), so they shouldn't weak-import anything from
+# libSystem but clang's own availability check. (With a newer SDK, libidn2
+# weak-imported macOS 15.4's strchrnul.) MoltenVK and GStreamer are
+# upstream's prebuilt binaries and aren't checked.
+LIB_WEAK_OK='^__availability_version_check$'
+while read -r f; do
+    dyld_info -imports "$f" | grep 'weak-import.*(from libSystem)' |
+        grep -o -E '_[A-Za-z0-9_$]+ \[weak-import\]' | awk '{print $1}' |
+        grep -v -E "$LIB_WEAK_OK" | sed "s|^|${f#"$T/"}: unguarded weak import |" ||
+        true
+done < <(find "$T/lib" -maxdepth 1 -type f -name '*.dylib' ! -name 'libMoltenVK.dylib') > "$W/lib-weak-imports.txt"
+if [[ -s "$W/lib-weak-imports.txt" ]]; then
+    cat "$W/lib-weak-imports.txt"
+    die "bundled libraries use functions newer than macOS $DEPLOYMENT_TARGET (was the toolchain built against PORTS_SDK?)"
+fi
 group_end
 
 log "Release tree at $T"
