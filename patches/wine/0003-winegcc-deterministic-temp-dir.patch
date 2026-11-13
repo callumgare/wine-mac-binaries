@@ -1,0 +1,53 @@
+From: written for wine-mac-binaries
+Source: none; a build-tool change for reproducible builds.
+Upstream: no (worth offering: it only changes winegcc's temp directory name)
+Why: winegcc links each PE file from a spec object in a temp directory named
+ after the time and pid (tools.h make_temp_dir). lld-link records that path in
+ the PDB, and the PDB's hash becomes the PE file's debug GUID and, with
+ -Brepro, its timestamp. So every PE file differed between two otherwise
+ identical builds. Naming the directory after a hash of the command line makes
+ the path, and so the files, the same each time. compile.sh sets TMPDIR to a
+ fixed path, so it doesn't depend on the build machine's user either.
+Applies to: wine 11.x (plain, staging); doesn't change what Wine does at run time
+
+--- a/tools/winegcc/winegcc.c
++++ b/tools/winegcc/winegcc.c
+@@ -1587,6 +1587,30 @@
+     return args;
+ }
+ 
++/* Name the temporary directory after a hash of the command line rather than
++ * the time and pid, so the paths lld records in PDB files (and so the PDB
++ * GUID and the PE files) are the same in every build. The command line
++ * includes the output file, so concurrent invocations don't collide; if the
++ * directory exists anyway, make_temp_dir() picks a fresh one as before. */
++static void init_temp_dir( int argc, char **argv )
++{
++    const char *tmpdir = getenv( "TMPDIR" );
++    unsigned int hash = 2166136261u;
++    const char *p;
++    char *name;
++    int i;
++
++    if (!tmpdir) tmpdir = "/tmp";
++    for (i = 0; i < argc; i++)
++    {
++        for (p = argv[i]; *p; p++) hash = (hash ^ (unsigned char)*p) * 16777619u;
++        hash = (hash ^ ' ') * 16777619u;
++    }
++    name = strmake( "%s/winegcc-%08x", tmpdir, hash );
++    if (!mkdir( name, 0700 )) temp_dir = name;
++    else free( name );
++}
++
+ int main(int argc, char **argv)
+ {
+     int i, c, next_is_arg = 0;
+@@ -1605,6 +1629,7 @@
+ 
+     /* setup tmp file removal at exit */
+     atexit(clean_temp_files);
++    init_temp_dir( argc, argv );
+ 
+     /* determine the processor type */
+     if (strendswith(argv[0], "winecpp")) processor = proc_cpp;

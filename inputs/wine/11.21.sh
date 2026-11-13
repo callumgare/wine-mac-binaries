@@ -28,4 +28,5 @@ MONO_SHA256="54a1b0111c3fe4b785eae688af94d27e64995707ad648b6fee8000381b80d298"
 PATCHES=(
     patches/wine/0001-win32u-enable-host-vulkan-portability-enumeration.patch
     patches/wine/0002-ntdll-point-vulkan-loader-at-bundled-drivers.patch
+    patches/wine/0003-winegcc-deterministic-temp-dir.patch
 )
