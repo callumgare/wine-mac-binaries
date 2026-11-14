@@ -43,10 +43,26 @@ jobs:
           name="toolchain-$ID-macos-x86_64"
           out="$WMB_VM_SHARE/out"
           rm -f "$out/$name".tar.xz "$out/$name"-sources.tar.xz
-          ./wmb vm toolchain "$ID" --archive
+          ./wmb vm toolchain "$ID" --archive &
+          echo $! > "$RUNNER_TEMP/vm.pid"
+          wait $!
           rm -rf dist; mkdir dist
           mv "$out/$name".tar.xz "$out/$name"-sources.tar.xz dist/
           (cd dist && shasum -a 256 ./*.tar.xz | sed 's| \./| |' > "$name.SHA256SUMS" && cat "$name.SHA256SUMS")
+
+      # A cancelled or timed-out step leaves vm.sh running (the runner
+      # doesn't stop it), and with it the VM. SIGTERM runs vm.sh's cleanup,
+      # which shuts the VM down and deletes it.
+      - name: Stop the VM if the build didn't finish
+        if: always()
+        timeout-minutes: 5
+        run: |
+          pid="$(cat "$RUNNER_TEMP/vm.pid" 2>/dev/null)" || exit 0
+          if ps -p "$pid" -o command= | grep -q 'build/vm\.sh'; then
+            echo "Stopping vm.sh ($pid)"
+            kill -TERM "$pid"
+            while kill -0 "$pid" 2>/dev/null; do sleep 5; done
+          fi
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
