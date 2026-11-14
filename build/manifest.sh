@@ -20,7 +20,9 @@ export WMB_ROOT WMB_OUT_DIR TC BUILD_ID BUILD_NAME FLAVOUR FLAVOUR_DESCRIPTION B
     DEPLOYMENT_TARGET WINE_VERSION WINE_URL WINE_SHA256 WINE_SIGNING_KEY WINE_RELEASE_EPOCH \
     GECKO_VERSION GECKO_X86_URL GECKO_X86_SHA256 GECKO_X86_64_URL GECKO_X86_64_SHA256 \
     MONO_VERSION MONO_URL MONO_SHA256
-export PATCHES="${PATCHES[*]}"
+# A string copy: bash can't export an array, and assigning to PATCHES itself
+# only replaced its first element, so the list never reached manifest.py.
+export PATCH_LIST="${PATCHES[*]}"
 export WMB_REPO_URL="${WMB_REPO_URL:-$(git -C "$WMB_ROOT" remote get-url origin 2>/dev/null | sed 's|\.git$||; s|^git@github.com:|https://github.com/|' || true)}"
 
 group_start "Manifest"

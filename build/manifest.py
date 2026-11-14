@@ -80,7 +80,7 @@ components.append({
     "source": {"url": env["WINE_URL"], "sha256": env["WINE_SHA256"],
                "signed_by": env.get("WINE_SIGNING_KEY")},
     "patches": [{"file": p, "sha256": sha256(ROOT / p)}
-                for p in env.get("PATCHES", "").split() if p],
+                for p in env["PATCH_LIST"].split() if p],
 })
 
 licenses_dir = T / "LICENSES"

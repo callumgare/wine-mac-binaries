@@ -123,6 +123,11 @@ require_x86_64() {
 
 # deterministic_tar <dir containing top> <top folder name> <output .tar.xz> <epoch>
 # Same input tree -> same bytes: sorted entries, fixed owner, fixed times.
+# "paxr" (restricted pax), not "pax": bsdtar's full pax writes every entry's
+# atime and ctime, so two builds of identical files gave different archives.
+# paxr adds an extended header only when needed (long paths), with the
+# fixed mtime. A fixed xz thread count, since single- and multi-threaded xz
+# write different streams.
 deterministic_tar() {
     local parent="$1" top="$2" out="$3" epoch="$4" stamp
     stamp="$(date -u -r "$epoch" +%Y%m%d%H%M.%S)"
@@ -132,8 +137,8 @@ deterministic_tar() {
         cd "$parent"
         LC_ALL=C find "$top" -print | LC_ALL=C sort > "$out.list"
         COPYFILE_DISABLE=1 tar --no-recursion --numeric-owner --uid 0 --gid 0 \
-            --no-xattrs --no-acls --no-fflags --format pax \
-            --options 'xz:compression-level=9,xz:threads=0' \
+            --no-xattrs --no-acls --no-fflags --format paxr \
+            --options 'xz:compression-level=9,xz:threads=4' \
             -cJf "$out" -T "$out.list"
     )
     rm -f "$out.list"
