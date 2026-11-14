@@ -37,9 +37,34 @@ sha256_of() { shasum -a 256 "$1" | cut -d' ' -f1; }
 # fetch <url> <sha256> -> prints the path of the verified file in the cache.
 # Every download in a build goes through here, so nothing unpinned gets in.
 fetch() {
-    local url="$1" sha="$2" name dest tmp
-    [[ ${#sha} -eq 64 ]] || die "fetch: no valid sha256 pinned for $url"
-    name="$(basename "${url%%\?*}")"
+    local url="$1" sha="$2"
+    download_verified "$sha" "$(basename "${url%%\?*}")" "$url" "$url"
+}
+
+# fetch_ghcr_blob <owner/repository> <sha256> <file name> -> as fetch, for a
+# file pushed to GitHub's container registry as an OCI artifact layer. A
+# layer's digest is the sha256 of the file itself, so the pinned sha256 is
+# also its address. Public packages need only an anonymous token.
+fetch_ghcr_blob() {
+    local repo="$1" sha="$2" name="$3" token
+    [[ ${#sha} -eq 64 ]] || die "fetch_ghcr_blob: no valid sha256 pinned for ghcr.io/$repo ($name)"
+    if [[ ! -f "$WMB_CACHE_DIR/$sha/$name" ]]; then
+        token="$(curl --fail --silent --show-error --retry 3 \
+            "https://ghcr.io/token?scope=repository:$repo:pull" |
+            sed -n 's/.*"token":"\([^"]*\)".*/\1/p')"
+        [[ -n "$token" ]] || die "ghcr.io gave no pull token for $repo (is the package public?)"
+    fi
+    # curl drops the Authorization header on the redirect to the blob
+    # storage host, which takes a signed URL instead.
+    download_verified "$sha" "$name" "ghcr.io/$repo@sha256:$sha ($name)" \
+        --header "Authorization: Bearer ${token:-}" "https://ghcr.io/v2/$repo/blobs/sha256:$sha"
+}
+
+# download_verified <sha256> <file name> <label> <curl args...>: the shared
+# part of fetch and fetch_ghcr_blob.
+download_verified() {
+    local sha="$1" name="$2" label="$3" dest tmp got; shift 3
+    [[ ${#sha} -eq 64 ]] || die "fetch: no valid sha256 pinned for $label"
     dest="$WMB_CACHE_DIR/$sha/$name"
     if [[ -f "$dest" ]]; then
         echo "$dest"
@@ -47,13 +72,12 @@ fetch() {
     fi
     mkdir -p "$(dirname "$dest")"
     tmp="$dest.part"
-    log "Downloading $url"
-    curl --fail --location --silent --show-error --retry 3 --output "$tmp" "$url"
-    local got
+    log "Downloading $label"
+    curl --fail --location --silent --show-error --retry 3 --output "$tmp" "$@"
     got="$(sha256_of "$tmp")"
     if [[ "$got" != "$sha" ]]; then
         rm -f "$tmp"
-        die "sha256 mismatch for $url: expected $sha, got $got"
+        die "sha256 mismatch for $label: expected $sha, got $got"
     fi
     mv "$tmp" "$dest"
     echo "$dest"

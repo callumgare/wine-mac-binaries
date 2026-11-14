@@ -3,7 +3,7 @@
 # Toolchain 20261111: everything a build needs besides macOS and Xcode.
 #
 # Installed at /opt/wmb/toolchains/20261111 by build/toolchain.sh, and
-# published as the toolchain-20261111-macos-x86_64 release.
+# published to ghcr.io/callumgare/wine-mac-binaries/toolchain:20261111.
 #
 # Built inside: ghcr.io/cirruslabs/macos-tahoe-xcode:27.2 (see TART_IMAGE).
 
@@ -12,9 +12,11 @@
 TART_IMAGE="ghcr.io/cirruslabs/macos-tahoe-xcode@sha256:f8315a2f627daf64ab2c4e11d29a4d267953902a16151ee28fcdd7185927c317"
 XCODE_VERSION="27.2"
 
-# The published archive (built by the toolchain workflow). Builds install it
-# from here when there's no local archive; empty until it's published.
-TOOLCHAIN_ARCHIVE_URL="https://github.com/callumgare/wine-mac-binaries/releases/download/toolchain-20261111-macos-x86_64/toolchain-20261111-macos-x86_64.tar.xz"
+# The published archive: an OCI artifact on GitHub's container registry,
+# pushed by the toolchain workflow (tag 20261111). Builds without a local
+# archive download its layer by this sha256 (from the artifact's
+# SHA256SUMS); empty until it's published.
+TOOLCHAIN_ARCHIVE_REPO="callumgare/wine-mac-binaries/toolchain"
 TOOLCHAIN_ARCHIVE_SHA256=""
 
 # Everything shipped inside a build carries this minimum macOS, as Gcenx's

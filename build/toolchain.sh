@@ -89,7 +89,7 @@ elif [[ $ARCHIVE -eq 0 && ( -f "$ARCHIVE_FILE" || -n "${TOOLCHAIN_ARCHIVE_SHA256
     # in toolchains/<id>.sh.
     src="$ARCHIVE_FILE"
     if [[ ! -f "$src" ]]; then
-        src="$(fetch "$TOOLCHAIN_ARCHIVE_URL" "$TOOLCHAIN_ARCHIVE_SHA256")"
+        src="$(fetch_ghcr_blob "$TOOLCHAIN_ARCHIVE_REPO" "$TOOLCHAIN_ARCHIVE_SHA256" "$(basename "$ARCHIVE_FILE")")"
     fi
     group_start "Installing toolchain $ID from $src"
     [[ -e "$TC" ]] && die "$TC exists but is incomplete; delete it and run again"
