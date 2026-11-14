@@ -12,6 +12,11 @@
 TART_IMAGE="ghcr.io/cirruslabs/macos-tahoe-xcode@sha256:f8315a2f627daf64ab2c4e11d29a4d267953902a16151ee28fcdd7185927c317"
 XCODE_VERSION="27.2"
 
+# The published archive (built by the toolchain workflow). Builds install it
+# from here when there's no local archive; empty until it's published.
+TOOLCHAIN_ARCHIVE_URL="https://github.com/callumgare/wine-mac-binaries/releases/download/toolchain-20261111-macos-x86_64/toolchain-20261111-macos-x86_64.tar.xz"
+TOOLCHAIN_ARCHIVE_SHA256=""
+
 # Everything shipped inside a build carries this minimum macOS, as Gcenx's
 # Wine binaries do.
 DEPLOYMENT_TARGET="10.15"

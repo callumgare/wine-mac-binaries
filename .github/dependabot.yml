@@ -1,0 +1,8 @@
+# Proposes updates to the commit-pinned Actions as pull requests (plan.md,
+# section 2).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

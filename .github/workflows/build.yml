@@ -1,0 +1,112 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+#
+# Builds one Wine version in a fresh VM from the toolchain's pinned Tart image
+# on the self-hosted Mac, then attests the files and puts them on a draft
+# release named after the build (wine-11.21-r1).
+#
+# Manual only. The self-hosted runner must never run pull-request code
+# (plan.md, section 2): don't add pull_request triggers here.
+
+name: build
+
+on:
+  workflow_dispatch:
+    inputs:
+      flavour:
+        description: Flavour (flavours/<name>.sh)
+        default: wine
+        required: true
+      version:
+        description: Wine version (inputs/<flavour>/<version>.sh)
+        required: true
+
+permissions: {}
+
+concurrency:
+  group: build-${{ inputs.flavour }}-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: [self-hosted, wmb-tart]
+    timeout-minutes: 300
+    permissions:
+      contents: read
+    outputs:
+      name: ${{ steps.inputs.outputs.name }}
+    env:
+      FLAVOUR: ${{ inputs.flavour }}
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - id: inputs
+        name: Resolve build name
+        run: |
+          source build/lib.sh
+          load_build_inputs "$FLAVOUR" "$VERSION"
+          echo "name=$BUILD_NAME" >> "$GITHUB_OUTPUT"
+          echo "BUILD_ID=$BUILD_ID" >> "$GITHUB_ENV"
+
+      - name: Build in a fresh VM
+        run: |
+          out="$WMB_VM_SHARE/out"
+          rm -f "$out/$BUILD_ID".*
+          rm -f "$out/$BUILD_ID"-*
+          ./wmb vm build "$FLAVOUR" "$VERSION"
+          rm -rf dist; mkdir dist
+          mv "$out/$BUILD_ID".* "$out/$BUILD_ID"-* dist/
+          ls -l dist
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.inputs.outputs.name }}
+          path: dist/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      NAME: ${{ needs.build.outputs.name }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ needs.build.outputs.name }}
+          path: dist
+
+      - name: Check the files against SHA256SUMS
+        working-directory: dist
+        run: sha256sum -c ./*.SHA256SUMS
+
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/*.tar.xz
+            dist/*.json
+
+      - uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          subject-path: dist/${{ needs.build.outputs.name }}-macos-x86_64.tar.xz
+          sbom-path: dist/${{ needs.build.outputs.name }}-macos-x86_64.spdx.json
+
+      - name: Create the draft release
+        run: |
+          if gh release view "$NAME" >/dev/null 2>&1; then
+            echo "::error::release $NAME already exists; builds are never replaced"
+            exit 1
+          fi
+          gh release create "$NAME" --draft --target "$GITHUB_SHA" \
+            --title "$NAME" --notes "Built by run $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID." \
+            dist/*

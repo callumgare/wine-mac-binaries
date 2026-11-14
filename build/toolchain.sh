@@ -84,13 +84,17 @@ ARCHIVE_FILE="$WMB_OUT_DIR/toolchain-$ID-macos-x86_64.tar.xz"
 
 if [[ -f "$TC/.complete" ]]; then
     log "Toolchain $ID is already at $TC"
-elif [[ -f "$ARCHIVE_FILE" && $ARCHIVE -eq 0 ]]; then
-    # TODO: once published, also download it from its release, pinned by
-    # sha256 in toolchains/<id>.sh.
-    group_start "Installing toolchain $ID from $ARCHIVE_FILE"
+elif [[ $ARCHIVE -eq 0 && ( -f "$ARCHIVE_FILE" || -n "${TOOLCHAIN_ARCHIVE_SHA256:-}" ) ]]; then
+    # A local archive (just built), else the published one, pinned by sha256
+    # in toolchains/<id>.sh.
+    src="$ARCHIVE_FILE"
+    if [[ ! -f "$src" ]]; then
+        src="$(fetch "$TOOLCHAIN_ARCHIVE_URL" "$TOOLCHAIN_ARCHIVE_SHA256")"
+    fi
+    group_start "Installing toolchain $ID from $src"
     [[ -e "$TC" ]] && die "$TC exists but is incomplete; delete it and run again"
-    tar -xJf "$ARCHIVE_FILE" -C "$WMB_TOOLCHAINS_DIR"
-    [[ -f "$TC/.complete" ]] || die "$ARCHIVE_FILE didn't contain a complete toolchain"
+    tar -xJf "$src" -C "$WMB_TOOLCHAINS_DIR"
+    [[ -f "$TC/.complete" ]] || die "$src didn't contain a complete toolchain"
     group_end
 else
     # An unfinished toolchain is resumed: each stage below skips itself if
