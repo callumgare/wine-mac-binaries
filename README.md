@@ -1,4 +1,4 @@
-# wine-mac-binaries
+# wine-mac-builds
 
 Builds of [Wine](https://www.winehq.org) for macOS, made automatically for
 every Wine release. They're for apps that bundle Wine and for people who

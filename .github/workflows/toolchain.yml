@@ -2,7 +2,7 @@
 #
 # Builds toolchain <id> in a fresh VM from its pinned Tart image on the
 # self-hosted Mac, attests it, and pushes it (with the sources MacPorts
-# downloaded) to ghcr.io/<owner>/wine-mac-binaries/toolchain:<id> as an OCI
+# downloaded) to ghcr.io/<owner>/wine-mac-builds/toolchain:<id> as an OCI
 # artifact. Builds then install it from there, pinned by sha256 in
 # toolchains/<id>.sh. Not a GitHub release, so the releases page only lists
 # Wine builds (plan.md, "Never-delete enforcement").

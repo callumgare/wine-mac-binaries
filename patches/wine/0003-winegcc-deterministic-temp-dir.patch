@@ -1,4 +1,4 @@
-From: written for wine-mac-binaries
+From: written for wine-mac-builds
 Source: none; a build-tool change for reproducible builds.
 Upstream: no (worth offering: it only changes winegcc's temp directory name)
 Why: winegcc links each PE file from a spec object in a temp directory named

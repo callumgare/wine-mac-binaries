@@ -189,7 +189,7 @@ repo = env.get("WMB_REPO_URL") or "(repository not set)"
 (T / "README.md").write_text(f"""# {BUILD_ID}
 
 Wine {env['WINE_VERSION']} for macOS (x86_64, runs under Rosetta 2 on Apple
-silicon), built by wine-mac-binaries: {repo}
+silicon), built by wine-mac-builds: {repo}
 
 - Flavour: `{env['FLAVOUR']}`. {env.get('FLAVOUR_DESCRIPTION', '')}
 - Build revision: r{env['BUILD_REVISION']}
@@ -240,7 +240,7 @@ sbom = {
     "creationInfo": {
         "created": subprocess.run(["date", "-u", "-r", env["WINE_RELEASE_EPOCH"], "+%Y-%m-%dT%H:%M:%SZ"],
                                   check=True, capture_output=True, text=True).stdout.strip(),
-        "creators": ["Tool: wine-mac-binaries build/manifest.py"],
+        "creators": ["Tool: wine-mac-builds build/manifest.py"],
     },
     "packages": packages,
     "relationships": [{"spdxElementId": "SPDXRef-DOCUMENT", "relationshipType": "DESCRIBES",

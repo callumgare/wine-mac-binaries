@@ -47,6 +47,10 @@ load_toolchain "$ID"
 #     the path: macosx_sdk_path there is ignored, it's only for portindex.
 #
 # The port build logs are checked afterwards.
+#
+# The markers here and in macports.conf below still say wine-mac-binaries
+# (the repo's old name): they end up inside toolchain 20261111, which must
+# rebuild identically from this script.
 patch_macports_use_xcode() {
     local f="$TC/libexec/macports/lib/port1.0/portconfigure.tcl"
     grep -q 'wine-mac-binaries: always use Xcode' "$f" ||

@@ -1,4 +1,4 @@
-From: written for wine-mac-binaries, reproducing behaviour of Gcenx's 11.21 binaries
+From: written for wine-mac-builds, reproducing behaviour of Gcenx's 11.21 binaries
 Source: none published. Gcenx's 11.21 ntdll.so does this (read from its
  disassembly: init_paths checks VK_DRIVER_FILES, VK_ICD_FILENAMES and
  VK_ADD_DRIVER_FILES, then sets VK_DRIVER_FILES to <lib/wine>/../../share/vulkan/icd.d
